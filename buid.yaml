@@ -1,0 +1,5 @@
+# Build
+yarn build
+yarn electron-builder
+copy python rpc to resources
+copy zerokey to resources
