@@ -11,6 +11,8 @@ ludusavi/**
 !ludusavi/config.yaml
 hydra-python-rpc/
 .python-version
+.venv39
+prompt.txt
 
 # Sentry Config File
 .env.sentry-build-plugin

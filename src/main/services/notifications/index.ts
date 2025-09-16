@@ -161,6 +161,17 @@ export const publishExtractionCompleteNotification = async (game: Game) => {
   }).show();
 };
 
+export const publishInstallationCompleteNotification = async (game: Game) => {
+  new Notification({
+    title: t("installation_complete", { ns: "notifications" }),
+    body: t("game_installed", {
+      ns: "notifications",
+      title: game.title,
+    }),
+    icon: trayIcon,
+  }).show();
+};
+
 export const publishNewAchievementNotification = async (info: {
   achievements: { title: string; iconUrl: string }[];
   unlockedAchievementCount: number;

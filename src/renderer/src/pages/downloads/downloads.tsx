@@ -43,8 +43,16 @@ export default function Downloads() {
       updateLibrary();
     });
 
-    return () => unsubscribe();
+    const unsubInstall = window.electron.onInstallationComplete(() =>{
+      updateLibrary();
+    })
+
+    return () => {
+      unsubscribe();
+      unsubInstall();
+    };
   }, [updateLibrary]);
+
 
   const handleOpenGameInstaller = (shop: GameShop, objectId: string) =>
     window.electron.openGameInstaller(shop, objectId).then((isBinaryInPath) => {
@@ -73,8 +81,13 @@ export default function Downloads() {
       if (!next.download) return prev;
 
       /* Is downloading */
-      if (lastPacket?.gameId === next.id || next.download.extracting)
+      if (
+        lastPacket?.gameId === next.id ||
+        next.download.extracting ||
+        next.download.status === "installing"
+      )
         return { ...prev, downloading: [...prev.downloading, next] };
+
 
       /* Is either queued or paused */
       if (next.download.queued || next.download?.status === "paused")

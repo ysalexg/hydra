@@ -220,6 +220,15 @@ contextBridge.exposeInMainWorld("electron", {
     ipcRenderer.on("on-extraction-complete", listener);
     return () => ipcRenderer.removeListener("on-extraction-complete", listener);
   },
+  onInstallationComplete: (cb: (shop: GameShop, objectId: string) => void) => {
+    const listener = (
+      _event: Electron.IpcRendererEvent,
+      shop: GameShop,
+      objectId: string
+    ) => cb(shop, objectId);
+    ipcRenderer.on("on-installation-complete", listener);
+    return () => ipcRenderer.removeListener("on-installation-complete", listener);
+  },
 
   /* Hardware */
   getDiskFreeSpace: (path: string) =>

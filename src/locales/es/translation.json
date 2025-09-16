@@ -243,6 +243,7 @@
     "resume_seeding": "Continuar seeding",
     "extract": "Extraer archivos",
     "extracting": "Extrayendo archivos…",
+    "installing": "Instalando...",
     "options": "Gestionar"
   },
   "settings": {
@@ -362,12 +363,19 @@
     "unset_theme": "Desactivar tema",
     "web_store": "Tienda Web",
     "enable_friend_request_notifications": "Cuando se recibe una solicitud de amistad",
-    "enable_auto_install": "Descargar actualizaciones automáticamente"
+    "enable_auto_install": "Descargar actualizaciones automáticamente",
+    "enable_friend_start_game_notifications": "Cuando un amigo empieza un juego",
+    "enable_achievement_custom_notifications": "Habilita notificaciones personalizadas de logros",
+    "achievement_custom_notification_position": "Posición personalizada de la notificación",
+    "test_notification": "Prueba",
+    "extract_files_by_default": "Extrae archivos por defecto luego de descargar"
   },
   "notifications": {
     "download_complete": "Descarga completada",
     "extraction_complete": "Extracción completada",
+    "installation_complete": "Instalación completada",
     "game_extracted": "{{title}} extraído exitosamente",
+    "game_installed": "{{title}} instalado exitosamente",
     "game_ready_to_install": "{{title}} está listo para instalarse",
     "repack_list_updated": "Lista de repacks actualizadas",
     "repack_count_one": "{{count}} repack ha sido añadido",

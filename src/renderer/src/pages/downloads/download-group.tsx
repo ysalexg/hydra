@@ -106,6 +106,10 @@ export function DownloadGroup({
     const finalDownloadSize = getFinalDownloadSize(game);
     const seedingStatus = seedingMap.get(game.id);
 
+    if (download.status === "installing") {
+      return <p>{t("installing")}</p>;
+    }
+
     if (download.extracting) {
       return <p>{t("extracting")}</p>;
     }
@@ -205,7 +209,7 @@ export function DownloadGroup({
       return [
         {
           label: t("install"),
-          disabled: deleting,
+          disabled: deleting || game.download?.status === "installing",
           onClick: () => {
             openGameInstaller(game.shop, game.objectId);
           },
@@ -213,7 +217,7 @@ export function DownloadGroup({
         },
         {
           label: t("extract"),
-          disabled: game.download.extracting,
+          disabled: game.download.extracting || game.download?.status === "installing",
           icon: <FileDirectoryIcon />,
           onClick: () => {
             extractGameDownload(game.shop, game.objectId);

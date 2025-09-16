@@ -1,12 +1,15 @@
 import path from "node:path";
 import fs from "node:fs";
+import { spawn } from "node:child_process";
+import { app } from "electron";
 import type { GameShop } from "@types";
 import { downloadsSublevel, gamesSublevel, levelKeys } from "@main/level";
 import { FILE_EXTENSIONS_TO_EXTRACT } from "@shared";
 import { SevenZip } from "./7zip";
 import { WindowManager } from "./window-manager";
-import { publishExtractionCompleteNotification } from "./notifications";
+import { publishInstallationCompleteNotification } from "./notifications";
 import { logger } from "./logger";
+
 
 export class GameFilesManager {
   constructor(
@@ -86,9 +89,14 @@ export class GameFilesManager {
       gamesSublevel.get(gameKey),
     ]);
 
+    if (!download || !game) return;
+
+    // 1) Marcar extracción como finalizada, e iniciar instalación si existe el binario
     await downloadsSublevel.put(gameKey, {
-      ...download!,
+      ...download,
       extracting: false,
+      // ponemos el nuevo estado de instalación solo si existe el instalador
+      status: "installing",
     });
 
     WindowManager.mainWindow?.webContents.send(
@@ -97,10 +105,130 @@ export class GameFilesManager {
       this.objectId
     );
 
-    if (publishNotification) {
-      publishExtractionCompleteNotification(game!);
+    WindowManager.mainWindow?.webContents.send(
+      "on-installation-start",
+      this.shop,
+      this.objectId
+    );
+
+    // 2) Ejecutar el instalador (zerokey.exe) si existe; esperar a su finalización
+    try {
+      const installerRan = await this.runInstallerIfExists();
+      if (installerRan) {
+        // instalación completada correctamente
+        await downloadsSublevel.put(gameKey, {
+          ...download,
+          extracting: false,
+          status: "complete",
+        });
+
+        WindowManager.mainWindow?.webContents.send(
+          "on-installation-complete",
+          this.shop,
+          this.objectId
+        );
+
+        if (publishNotification) {
+          publishInstallationCompleteNotification(game!);
+        }
+      } else {
+        // no había instalador: marcar complete (puede ocurrir)
+        await downloadsSublevel.put(gameKey, {
+          ...download,
+          extracting: false,
+          status: "complete",
+        });
+
+        WindowManager.mainWindow?.webContents.send(
+          "on-installation-complete",
+          this.shop,
+          this.objectId
+        );
+
+        if (publishNotification) {
+          publishInstallationCompleteNotification(game!);
+        }
+      }
+    } catch (err) {
+      logger.error("Installer failed", err);
+      // Si la instalación falla: limpiar flags y notificar al renderer
+      await downloadsSublevel.put(gameKey, {
+        ...download,
+        extracting: false,
+        status: "error",
+      });
+
+      WindowManager.mainWindow?.webContents.send(
+        "on-installation-error",
+        this.shop,
+        this.objectId,
+        (err && (err as Error).message) || "Installation failed"
+      );
     }
   }
+
+  private async runInstallerIfExists(): Promise<boolean> {
+    // 1) Construir posibles rutas del instalador
+    // Intentamos: process.resourcesPath/resources/zerokey.exe  (packaged)
+    // y también ./resources/zerokey.exe para desarrollo
+    const candidatePaths = [
+      path.join(process.resourcesPath || "", "zerokey", "zerokey.exe"),
+      path.join(app.getAppPath() || "", "resources", "zerokey", "zerokey.exe"),
+      path.join(__dirname, "..", "resources", "zerokey", "zerokey.exe"),
+    ];
+
+    let installerPath: string | null = null;
+    for (const p of candidatePaths) {
+      if (p && fs.existsSync(p)) {
+        installerPath = p;
+        break;
+      }
+    }
+
+    for (const p of candidatePaths) {
+      try {
+        const real = fs.realpathSync(p);
+        logger.log("Found installer path:", real);
+        installerPath = real;
+        break;
+      } catch {
+        logger.log("Not found:", p);
+      }
+    }
+
+
+    if (!installerPath) {
+      logger.log("No zerokey.exe found in resources; skipping installer step.");
+      return false;
+    }
+
+    // Ejecutar el .exe y esperar a que termine
+    return new Promise<boolean>((resolve, reject) => {
+      try {
+        const child = spawn(installerPath!, [], {
+          detached: false,
+          stdio: "ignore",
+        });
+
+        child.on("error", (err) => {
+          logger.error("Failed to spawn installer", err);
+          reject(err);
+        });
+
+        child.on("exit", (code, signal) => {
+          logger.log(`Installer exited with code ${code} signal ${signal}`);
+          if (code === 0 || code === null) {
+            resolve(true);
+          } else {
+            reject(new Error(`Installer exit code ${code}`));
+          }
+        });
+      } catch (err) {
+        reject(err);
+      }
+    });
+  }
+
 
   async extractDownloadedFile() {
     const gameKey = levelKeys.game(this.shop, this.objectId);

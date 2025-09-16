@@ -140,54 +140,70 @@ export class DownloadManager {
 
       const shouldExtract = download.automaticallyExtract;
 
-      if (progress === 1 && download) {
-        publishDownloadCompleteNotification(game);
+    if (progress === 1 && download) {
+      publishDownloadCompleteNotification(game);
 
-        if (
-          userPreferences?.seedAfterDownloadComplete &&
-          download.downloader === Downloader.Torrent
-        ) {
+      if (
+        userPreferences?.seedAfterDownloadComplete &&
+        download.downloader === Downloader.Torrent
+      ) {
+        // Si se va a seedear y además extraer, dejamos status "seeding" y extracting true.
+        await downloadsSublevel.put(gameId, {
+          ...download,
+          status: "seeding",
+          shouldSeed: true,
+          queued: false,
+          extracting: shouldExtract,
+        });
+      } else {
+        if (shouldExtract) {
+          // No marcar "complete" aún: pasar a un status explícito de extracción.
           await downloadsSublevel.put(gameId, {
             ...download,
-            status: "seeding",
-            shouldSeed: true,
+            status: "extracting",
+            shouldSeed: false,
             queued: false,
-            extracting: shouldExtract,
+            extracting: true,
           });
+
+          // Podemos cancelar el download worker / RPC si procede (como antes)
+          this.cancelDownload(gameId);
         } else {
+          // No hay extracción: comportamiento igual que antes
           await downloadsSublevel.put(gameId, {
             ...download,
             status: "complete",
             shouldSeed: false,
             queued: false,
-            extracting: shouldExtract,
+            extracting: false,
           });
 
           this.cancelDownload(gameId);
         }
+      }
 
-        if (shouldExtract) {
-          const gameFilesManager = new GameFilesManager(
-            game.shop,
-            game.objectId
-          );
+      if (shouldExtract) {
+        const gameFilesManager = new GameFilesManager(
+          game.shop,
+          game.objectId
+        );
 
-          if (
-            FILE_EXTENSIONS_TO_EXTRACT.some((ext) =>
-              download.folderName?.endsWith(ext)
+        if (
+          FILE_EXTENSIONS_TO_EXTRACT.some((ext) =>
+            download.folderName?.endsWith(ext)
+          )
+        ) {
+          gameFilesManager.extractDownloadedFile();
+        } else {
+          gameFilesManager
+            .extractFilesInDirectory(
+              path.join(download.downloadPath, download.folderName!)
             )
-          ) {
-            gameFilesManager.extractDownloadedFile();
-          } else {
-            gameFilesManager
-              .extractFilesInDirectory(
-                path.join(download.downloadPath, download.folderName!)
-              )
-              .then(() => {
-                gameFilesManager.setExtractionComplete();
-              });
-          }
+            .then(() => {
+              gameFilesManager.setExtractionComplete();
+            });
         }
+      }
 
         const downloads = await downloadsSublevel
           .values()
