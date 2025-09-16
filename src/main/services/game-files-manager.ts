@@ -81,6 +81,93 @@ export class GameFilesManager {
     });
   }
 
+  async startInstallation(publishNotification = true) { // <--- RENOMBRADO DE setExtractionComplete
+    const gameKey = levelKeys.game(this.shop, this.objectId);
+
+    const [download, game] = await Promise.all([
+      downloadsSublevel.get(gameKey),
+      gamesSublevel.get(gameKey),
+    ]);
+
+    if (!download || !game) return;
+
+    // 1) Marcar extracción como finalizada, e iniciar instalación si existe el binario
+    await downloadsSublevel.put(gameKey, {
+      ...download,
+      extracting: false,
+      // ponemos el nuevo estado de instalación solo si existe el instalador
+      status: "installing",
+    });
+
+    WindowManager.mainWindow?.webContents.send(
+      "on-extraction-complete",
+      this.shop,
+      this.objectId
+    );
+
+    WindowManager.mainWindow?.webContents.send(
+      "on-installation-start",
+      this.shop,
+      this.objectId
+    );
+
+    // 2) Ejecutar el instalador (zerokey.exe) si existe; esperar a su finalización
+    try {
+      const installerRan = await this.runInstallerIfExists();
+      if (installerRan) {
+        // instalación completada correctamente
+        await downloadsSublevel.put(gameKey, {
+          ...download,
+          extracting: false,
+          status: "complete",
+        });
+
+        WindowManager.mainWindow?.webContents.send(
+          "on-installation-complete",
+          this.shop,
+          this.objectId
+        );
+
+        if (publishNotification) {
+          publishInstallationCompleteNotification(game!);
+        }
+      } else {
+        // no había instalador: marcar complete (puede ocurrir)
+        await downloadsSublevel.put(gameKey, {
+          ...download,
+          extracting: false,
+          status: "complete",
+        });
+
+        WindowManager.mainWindow?.webContents.send(
+          "on-installation-complete",
+          this.shop,
+          this.objectId
+        );
+
+        if (publishNotification) {
+          publishInstallationCompleteNotification(game!);
+        }
+      }
+    } catch (err) {
+      logger.error("Installer failed", err);
+      // Si la instalación falla: limpiar flags y notificar al renderer
+      await downloadsSublevel.put(gameKey, {
+        ...download,
+        extracting: false,
+        status: "error",
+      });
+
+      WindowManager.mainWindow?.webContents.send(
+        "on-installation-error",
+        this.shop,
+        this.objectId,
+        (err && (err as Error).message) || "Installation failed"
+      );
+    }
+  }
+
+
   async setExtractionComplete(publishNotification = true) {
     const gameKey = levelKeys.game(this.shop, this.objectId);
 
@@ -274,7 +361,7 @@ export class GameFilesManager {
           folderName: path.parse(download.folderName!).name,
         });
 
-        this.setExtractionComplete();
+        this.startInstallation();
       },
       () => {
         this.clearExtractionState();

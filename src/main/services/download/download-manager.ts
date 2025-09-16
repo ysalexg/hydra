@@ -182,11 +182,18 @@ export class DownloadManager {
         }
       }
 
+      const gameFilesManager = new GameFilesManager(
+        game.shop,
+        game.objectId
+      );
+
       if (shouldExtract) {
-        const gameFilesManager = new GameFilesManager(
-          game.shop,
-          game.objectId
-        );
+        await downloadsSublevel.put(gameId, {
+          ...download,
+          status: "extracting",
+          extracting: true,
+          queued: false,
+        });
 
         if (
           FILE_EXTENSIONS_TO_EXTRACT.some((ext) =>
@@ -200,9 +207,11 @@ export class DownloadManager {
               path.join(download.downloadPath, download.folderName!)
             )
             .then(() => {
-              gameFilesManager.setExtractionComplete();
+              gameFilesManager.startInstallation();
             });
         }
+      } else {
+        gameFilesManager.startInstallation();
       }
 
         const downloads = await downloadsSublevel
