@@ -10,7 +10,6 @@ import { WindowManager } from "./window-manager";
 import { publishInstallationCompleteNotification } from "./notifications";
 import { logger } from "./logger";
 
-
 export class GameFilesManager {
   constructor(
     private readonly shop: GameShop,
@@ -255,66 +254,160 @@ export class GameFilesManager {
   }
 
   private async runInstallerIfExists(): Promise<boolean> {
-    // 1) Construir posibles rutas del instalador
-    // Intentamos: process.resourcesPath/resources/zerokey.exe  (packaged)
-    // y también ./resources/zerokey.exe para desarrollo
     const candidatePaths = [
       path.join(process.resourcesPath || "", "zerokey", "zerokey.exe"),
       path.join(app.getAppPath() || "", "resources", "zerokey", "zerokey.exe"),
       path.join(__dirname, "..", "resources", "zerokey", "zerokey.exe"),
+      path.join(process.resourcesPath || "", "resources", "zerokey", "zerokey.exe"),
     ];
 
     let installerPath: string | null = null;
-    for (const p of candidatePaths) {
-      if (p && fs.existsSync(p)) {
-        installerPath = p;
-        break;
-      }
-    }
 
     for (const p of candidatePaths) {
       try {
-        const real = fs.realpathSync(p);
-        logger.log("Found installer path:", real);
-        installerPath = real;
-        break;
-      } catch {
-        logger.log("Not found:", p);
-      }
+        if (p && fs.existsSync(p)) {
+          installerPath = p;
+          break;
+        }
+      } catch {}
     }
-
 
     if (!installerPath) {
       logger.log("No zerokey.exe found in resources; skipping installer step.");
       return false;
     }
 
-    // Ejecutar el .exe y esperar a que termine
     return new Promise<boolean>((resolve, reject) => {
       try {
-        const child = spawn(installerPath!, [], {
-          detached: false,
-          stdio: "ignore",
-        });
+        const installerDir = path.dirname(installerPath);
+        const logCandidates = [
+          path.join(installerDir, "zerokey.log"),
+          path.join(installerDir, "logs", "zerokey.log"),
+        ];
+
+        // --- ELIMINAR ZEROKEY.LOG ANTES DE EJECUTAR ---
+        for (const p of logCandidates) {
+          try {
+            if (fs.existsSync(p)) fs.unlinkSync(p);
+          } catch {
+            // ignorar errores de borrado
+          }
+        }
+
+        // Spawn sin stdout/stderr
+        const child = spawn(installerPath!, [], { detached: false, stdio: "ignore" });
+
+        let logPath: string | null = null;
+        for (const p of logCandidates) {
+          if (fs.existsSync(p)) {
+            logPath = p;
+            break;
+          }
+        }
+
+        let lastSize = 0;
+        let partial = "";
+        const POLL_MS = 300;
+        let pollInterval: NodeJS.Timeout | null = null;
+
+        const sendLogLine = (line: string) => {
+          if (!line) return;
+          WindowManager.mainWindow?.webContents.send(
+            "on-installation-progress",
+            String(this.shop),
+            String(this.objectId),
+            line.trim()
+          );
+        };
+
+        const startPolling = () => {
+          if (pollInterval) return;
+          pollInterval = setInterval(async () => {
+            try {
+              if (!logPath) {
+                for (const p of logCandidates) {
+                  if (fs.existsSync(p)) {
+                    logPath = p;
+                    try {
+                      const st = await fs.promises.stat(logPath);
+                      lastSize = st.size;
+                    } catch {
+                      lastSize = 0;
+                    }
+                    break;
+                  }
+                }
+                return;
+              }
+
+              const st = await fs.promises.stat(logPath);
+              if (st.size > lastSize) {
+                const rs = fs.createReadStream(logPath, {
+                  start: lastSize,
+                  end: st.size - 1,
+                  encoding: "utf8",
+                });
+                lastSize = st.size;
+                rs.on("data", (chunk: string) => {
+                  partial += chunk;
+                  const lines = partial.split(/\r?\n/);
+                  partial = lines.pop() || "";
+                  for (const ln of lines) sendLogLine(ln);
+                });
+              }
+            } catch {}
+          }, POLL_MS);
+        };
+
+        startPolling();
+
+        const cleanup = async (code: number | null) => {
+          if (logPath) {
+            try {
+              const st = await fs.promises.stat(logPath);
+              if (st.size > lastSize) {
+                const data = await fs.promises.readFile(logPath, "utf8");
+                const tail = data.slice(lastSize);
+                const combined = partial + tail;
+                const lines = combined.split(/\r?\n/).filter(Boolean);
+                for (const l of lines) sendLogLine(l);
+                partial = "";
+              } else if (partial) {
+                sendLogLine(partial);
+                partial = "";
+              }
+            } catch {}
+          } else if (partial) {
+            sendLogLine(partial);
+            partial = "";
+          }
+
+          if (pollInterval) {
+            clearInterval(pollInterval);
+            pollInterval = null;
+          }
+
+          sendLogLine(`Process finished (code ${code})`);
+
+          if (code === 0 || code === null) resolve(true);
+          else reject(new Error(`Installer exit code ${code}`));
+        };
 
         child.on("error", (err) => {
-          logger.error("Failed to spawn installer", err);
+          if (pollInterval) clearInterval(pollInterval);
           reject(err);
         });
 
-        child.on("exit", (code, signal) => {
-          logger.log(`Installer exited with code ${code} signal ${signal}`);
-          if (code === 0 || code === null) {
-            resolve(true);
-          } else {
-            reject(new Error(`Installer exit code ${code}`));
-          }
-        });
+        child.on("exit", (_code) => setTimeout(() => cleanup(_code), 150));
       } catch (err) {
         reject(err);
       }
     });
   }
+
+
+
+
 
 
   async extractDownloadedFile() {

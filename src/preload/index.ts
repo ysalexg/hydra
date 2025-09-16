@@ -229,6 +229,21 @@ contextBridge.exposeInMainWorld("electron", {
     ipcRenderer.on("on-installation-complete", listener);
     return () => ipcRenderer.removeListener("on-installation-complete", listener);
   },
+  onInstallationProgress: (cb: (shop: string, objectId: string, message: string) => void) => {
+    const listener = (
+      _event: Electron.IpcRendererEvent,
+      shop: string,
+      objectId: string,
+      message: string
+    ) => {
+      // LOG de debug (este aparecerá en la consola del renderer)
+      console.log('[preload] on-installation-progress recv', shop, objectId, message);
+      cb(shop, objectId, message);
+    };
+    ipcRenderer.on("on-installation-progress", listener);
+    return () => ipcRenderer.removeListener("on-installation-progress", listener);
+  },
+
 
   /* Hardware */
   getDiskFreeSpace: (path: string) =>

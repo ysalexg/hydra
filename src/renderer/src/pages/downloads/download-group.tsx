@@ -39,6 +39,7 @@ export interface DownloadGroupProps {
   openDeleteGameModal: (shop: GameShop, objectId: string) => void;
   openGameInstaller: (shop: GameShop, objectId: string) => void;
   seedingStatus: SeedingStatus[];
+  progressMessages: Record<string, string>;
 }
 
 export function DownloadGroup({
@@ -47,6 +48,7 @@ export function DownloadGroup({
   openDeleteGameModal,
   openGameInstaller,
   seedingStatus,
+  progressMessages,
 }: Readonly<DownloadGroupProps>) {
   const navigate = useNavigate();
 
@@ -107,7 +109,10 @@ export function DownloadGroup({
     const seedingStatus = seedingMap.get(game.id);
 
     if (download.status === "installing") {
-      return <p>{t("installing")}</p>;
+      const key = `${game.shop}:${game.objectId}`;
+      console.log('[UI] expecting key', key, 'progressMsg=', progressMessages[key]);
+      const msg = progressMessages?.[key];
+      return <p>{msg ?? t("installing")}</p>;
     }
 
     if (download.extracting) {

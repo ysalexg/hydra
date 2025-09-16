@@ -23,6 +23,11 @@ export default function Downloads() {
 
   const { removeGameInstaller, pauseSeeding } = useDownload();
 
+  const [progressMessages, setProgressMessages] = useState<
+    Record<string, string>
+  >({});
+
+
   const handleDeleteGame = async () => {
     if (gameToBeDeleted.current) {
       const [shop, objectId] = gameToBeDeleted.current;
@@ -43,15 +48,37 @@ export default function Downloads() {
       updateLibrary();
     });
 
-    const unsubInstall = window.electron.onInstallationComplete(() =>{
-      updateLibrary();
-    })
+    const unsubInstall = window.electron.onInstallationComplete(
+      (shop: string, objectId: string) => {
+        // limpiar mensaje final del instalador al completarse
+        setProgressMessages((prev) => {
+          const copy = { ...prev };
+          delete copy[`${shop}:${objectId}`];
+          return copy;
+        });
+        updateLibrary();
+      }
+    );
+
+    const unsubProgress = window.electron.onInstallationProgress(
+      (shop: string, objectId: string, message: string) => {
+        // normalizar clave (usar same format que main envía)
+        const key = `${shop}:${objectId}`;
+        setProgressMessages((prev) => ({
+          ...prev,
+          [key]: message,
+        }));
+      }
+    );
 
     return () => {
       unsubscribe();
       unsubInstall();
+      unsubProgress();
     };
   }, [updateLibrary]);
+
+
 
 
   const handleOpenGameInstaller = (shop: GameShop, objectId: string) =>
@@ -154,6 +181,7 @@ export default function Downloads() {
                 openDeleteGameModal={handleOpenDeleteGameModal}
                 openGameInstaller={handleOpenGameInstaller}
                 seedingStatus={seedingStatus}
+                progressMessages={progressMessages}
               />
             ))}
           </div>
