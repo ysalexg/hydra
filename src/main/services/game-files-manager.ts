@@ -1,5 +1,6 @@
 import path from "node:path";
 import fs from "node:fs";
+import yaml from "js-yaml";
 import { spawn } from "node:child_process";
 import { app } from "electron";
 import type { GameShop } from "@types";
@@ -9,6 +10,20 @@ import { SevenZip } from "./7zip";
 import { WindowManager } from "./window-manager";
 import { publishInstallationCompleteNotification } from "./notifications";
 import { logger } from "./logger";
+
+function getZerokeyConfig() {
+    try {
+      // Ajusta según dónde quede instalado zerokey/config.yaml
+      const configPath = path.join(process.resourcesPath || "", "zerokey", "config.yaml");
+      if (fs.existsSync(configPath)) {
+        const content = fs.readFileSync(configPath, "utf8");
+        return yaml.load(content) as any;
+      }
+    } catch (err) {
+      logger.error("No pude leer zerokey config.yaml", err);
+    }
+    return null;
+  }
 
 export class GameFilesManager {
   constructor(
@@ -80,7 +95,90 @@ export class GameFilesManager {
     });
   }
 
-  async startInstallation(publishNotification = true) { // <--- RENOMBRADO DE setExtractionComplete
+  private async getExtractionInfo(download: any) {
+    const root = download.downloadPath;
+    const folderName = download.folderName || "";
+
+    const info: {
+      filePath: string | null;
+      extractionPath: string | null;
+      folderName: string | null;
+      compressedFiles?: string[];
+    } = {
+      filePath: null,
+      extractionPath: null,
+      folderName: folderName || null,
+    };
+
+    try {
+      const isCompressed = (fname: string) =>
+        FILE_EXTENSIONS_TO_EXTRACT.some((ext) => fname.toLowerCase().endsWith(ext));
+
+      // Leer zerokey/config.yaml
+      const zerokeyConfig = getZerokeyConfig();
+      const extractedRoot =
+        zerokeyConfig?.paths?.extracted_folder || root;
+
+      // 1) Si tenemos folderName, comprobar si es archivo o carpeta
+      if (folderName) {
+        const candidate = path.join(root, folderName);
+        if (fs.existsSync(candidate)) {
+          const st = await fs.promises.stat(candidate);
+          if (st.isFile() && isCompressed(folderName)) {
+            // caso: archivo comprimido suelto en downloadPath
+            info.filePath = path.resolve(candidate);
+            info.extractionPath = path.join(extractedRoot, path.parse(folderName).name);
+            return info;
+          } else if (st.isDirectory()) {
+            // caso: folderName apunta a un directorio
+            const files = await fs.promises.readdir(candidate);
+            const compressedFiles = files.filter((f) => isCompressed(f));
+            info.compressedFiles = compressedFiles;
+            if (compressedFiles.length) {
+              // tomamos el primer archivo "extractable" (respeta part1.rar)
+              const filesToExtract = compressedFiles.filter(
+                (file) => /part1\.rar$/i.test(file) || !/part\d+\.rar$/i.test(file)
+              );
+              const chosen = filesToExtract.length ? filesToExtract[0] : compressedFiles[0];
+              info.filePath = path.resolve(path.join(candidate, chosen));
+              // extracción va a extractedRoot/<folderName>
+              info.extractionPath = path.join(extractedRoot, folderName);
+              return info;
+            } else {
+              // no hay comprimidos dentro del directorio
+              info.filePath = null;
+              info.extractionPath = path.join(extractedRoot, folderName);
+              return info;
+            }
+          }
+        }
+      }
+
+      // 2) Si no hay folderName o no existe, buscar comprimidos directamente en downloadPath
+      if (fs.existsSync(root)) {
+        const files = await fs.promises.readdir(root);
+        const compressedFiles = files.filter((f) => isCompressed(f));
+        info.compressedFiles = compressedFiles;
+        if (compressedFiles.length) {
+          const filesToExtract = compressedFiles.filter(
+            (file) => /part1\.rar$/i.test(file) || !/part\d+\.rar$/i.test(file)
+          );
+          const chosen = filesToExtract.length ? filesToExtract[0] : compressedFiles[0];
+          info.filePath = path.resolve(path.join(root, chosen));
+          info.extractionPath = path.join(extractedRoot, path.parse(chosen).name);
+          return info;
+        }
+      }
+
+      // fallback: nada encontrado
+      return info;
+    } catch (err) {
+      logger.error("getExtractionInfo failed", err);
+      return info;
+    }
+  }
+
+  async startInstallation(publishNotification = true) {
     const gameKey = levelKeys.game(this.shop, this.objectId);
 
     const [download, game] = await Promise.all([
@@ -90,11 +188,48 @@ export class GameFilesManager {
 
     if (!download || !game) return;
 
+    // Determinar info de extracción lo antes posible
+    let extractionInfo: {
+      filePath: string | null;
+      extractionPath: string | null;
+      folderName: string | null;
+      compressedFiles?: string[];
+    } | null = null;
+
+    try {
+      extractionInfo = await this.getExtractionInfo(download);
+      logger.log("Determined extractionInfo:", extractionInfo);
+
+      // Guardar extract.json en la misma carpeta que zerokey.exe
+      const zerokeyDir = path.join(process.resourcesPath || "", "zerokey");
+      const extractFilePath = path.join(zerokeyDir, "extract.json");
+
+      const contents = {
+        filePath: extractionInfo.filePath,
+        extractionPath: extractionInfo.extractionPath,
+        folderName: extractionInfo.folderName,
+        compressedFiles: extractionInfo.compressedFiles || [],
+        timestamp: new Date().toISOString(),
+      };
+
+      try {
+        await fs.promises.writeFile(
+          extractFilePath,
+          JSON.stringify(contents, null, 2),
+          "utf8"
+        );
+        logger.log(`Wrote extract info to ${extractFilePath}`);
+      } catch (err) {
+        logger.error("Failed to write extract.json", err);
+      }
+    } catch (err) {
+      logger.error("Failed to determine extraction info", err);
+    }
+
     // 1) Marcar extracción como finalizada, e iniciar instalación si existe el binario
     await downloadsSublevel.put(gameKey, {
       ...download,
       extracting: false,
-      // ponemos el nuevo estado de instalación solo si existe el instalador
       status: "installing",
     });
 
@@ -112,7 +247,7 @@ export class GameFilesManager {
 
     // 2) Ejecutar el instalador (zerokey.exe) si existe; esperar a su finalización
     try {
-      const installerRan = await this.runInstallerIfExists();
+      const installerRan = await this.runInstallerIfExists(extractionInfo || undefined);
       if (installerRan) {
         // instalación completada correctamente
         await downloadsSublevel.put(gameKey, {
@@ -165,6 +300,7 @@ export class GameFilesManager {
       );
     }
   }
+
 
 
   async setExtractionComplete(publishNotification = true) {
@@ -253,7 +389,12 @@ export class GameFilesManager {
     }
   }
 
-  private async runInstallerIfExists(): Promise<boolean> {
+  private async runInstallerIfExists(extractionInfo?: {
+    filePath: string | null;
+    extractionPath: string | null;
+    folderName: string | null;
+    compressedFiles?: string[];
+  }): Promise<boolean> {
     const candidatePaths = [
       path.join(process.resourcesPath || "", "zerokey", "zerokey.exe"),
       path.join(app.getAppPath() || "", "resources", "zerokey", "zerokey.exe"),
@@ -285,13 +426,38 @@ export class GameFilesManager {
           path.join(installerDir, "logs", "zerokey.log"),
         ];
 
-        // --- ELIMINAR ZEROKEY.LOG ANTES DE EJECUTAR ---
+        // --- BORRAR ZEROKEY.LOG ANTES DE EJECUTAR ---
         for (const p of logCandidates) {
           try {
             if (fs.existsSync(p)) fs.unlinkSync(p);
           } catch {
             // ignorar errores de borrado
           }
+        }
+
+        // --- BORRAR extract.json ANTES DE EJECUTAR (y crear uno NUEVO en installerDir) ---
+        const extractFilePath = path.join(installerDir, "extract.json");
+        try {
+          if (fs.existsSync(extractFilePath)) {
+            fs.unlinkSync(extractFilePath);
+          }
+        } catch {
+          // ignorar errores de borrado
+        }
+
+        // Escribir extract.json (JSON por defecto)
+        try {
+          const payload = {
+            filePath: extractionInfo?.filePath ?? null,
+            extractionPath: extractionInfo?.extractionPath ?? null,
+            folderName: extractionInfo?.folderName ?? null,
+            compressedFiles: extractionInfo?.compressedFiles ?? []
+          };
+          fs.writeFileSync(extractFilePath, JSON.stringify(payload, null, 2), "utf8");
+          logger.log(`Wrote extract info to ${extractFilePath}`);
+        } catch (err) {
+          logger.error("Failed to write extract.json in installer dir", err);
+          // no interrumpimos la instalación por esto
         }
 
         // Spawn sin stdout/stderr
@@ -404,6 +570,7 @@ export class GameFilesManager {
       }
     });
   }
+
 
 
 
